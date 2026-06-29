@@ -1,0 +1,7 @@
+start-local-server.cmd
+docker compose up -d
+docker compose up -d --build
+docker compose down
+docker compose restart
+docker compose ps
+docker compose logs -f
