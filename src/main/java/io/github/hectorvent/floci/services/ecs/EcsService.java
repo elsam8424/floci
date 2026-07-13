@@ -411,11 +411,12 @@ public class EcsService {
 
     public List<EcsTask> runTask(String clusterRef, String taskDefinitionRef, int count,
                                   LaunchType launchType, String group, String startedBy,
-                                  List<ContainerOverride> containerOverrides, String region) {
+                                  List<ContainerOverride> containerOverrides,
+                                  NetworkConfiguration networkConfiguration, String region) {
         EcsCluster cluster = resolveClusterOrDefault(clusterRef, region);
         TaskDefinition taskDef = resolveTaskDefinitionOrThrow(taskDefinitionRef, region);
         return launchTasks(cluster, taskDef, count, launchType, group, startedBy, null,
-                containerOverrides, region);
+                containerOverrides, networkConfiguration, region);
     }
 
     public List<EcsTask> startTask(String clusterRef, List<String> containerInstanceRefs,
@@ -426,7 +427,7 @@ public class EcsService {
         for (String instanceRef : containerInstanceRefs) {
             ContainerInstance instance = resolveContainerInstanceOrThrow(cluster.getClusterArn(), instanceRef);
             List<EcsTask> launched = launchTasks(cluster, taskDef, 1, LaunchType.EC2,
-                    group, startedBy, instance.getContainerInstanceArn(), null, region);
+                    group, startedBy, instance.getContainerInstanceArn(), null, null, region);
             result.addAll(launched);
         }
         return result;
@@ -435,7 +436,8 @@ public class EcsService {
     private List<EcsTask> launchTasks(EcsCluster cluster, TaskDefinition taskDef, int count,
                                        LaunchType launchType, String group, String startedBy,
                                        String containerInstanceArn,
-                                       List<ContainerOverride> containerOverrides, String region) {
+                                       List<ContainerOverride> containerOverrides,
+                                       NetworkConfiguration networkConfiguration, String region) {
         // Fail loudly instead of silently launching zero containers and leaving
         // a task that looks RUNNING with nothing behind it.
         if (taskDef.getContainerDefinitions() == null || taskDef.getContainerDefinitions().isEmpty()) {
@@ -464,6 +466,7 @@ public class EcsService {
             task.setCreatedAt(Instant.now());
             task.setContainers(List.of());
             task.setContainerInstanceArn(containerInstanceArn);
+            task.setNetworkConfiguration(networkConfiguration);
 
             tasks.put(taskArn, task);
 
@@ -478,7 +481,14 @@ public class EcsService {
                     LOG.errorv("Failed to start ECS task {0}: {1}", taskArn, e.getMessage());
                     task.setLastStatus(TaskStatus.STOPPED.name());
                     task.setDesiredStatus(TaskStatus.STOPPED.name());
-                    task.setStoppedReason("Failed to start: " + e.getMessage());
+                    // A ResourceInitializationError is already AWS's exact stopped-reason wording
+                    // (e.g. a secret that could not be resolved), so pass it through verbatim.
+                    // Other start failures keep the generic prefix.
+                    boolean resourceInitError = e instanceof AwsException ae
+                            && "ResourceInitializationError".equals(ae.getErrorCode());
+                    task.setStoppedReason(resourceInitError
+                            ? e.getMessage()
+                            : "Failed to start: " + e.getMessage());
                     task.setStoppedAt(Instant.now());
                 }
             } else {
@@ -1362,7 +1372,8 @@ public class EcsService {
             for (int i = 0; i < toStart; i++) {
                 try {
                     List<EcsTask> launched = runTask(clusterName, svc.getTaskDefinition(), 1,
-                            svc.getLaunchType(), svc.getServiceName(), "ecs-svc", null, region);
+                            svc.getLaunchType(), svc.getServiceName(), "ecs-svc", null,
+                            svc.getNetworkConfiguration(), region);
                     LOG.infov("Service reconciler started task {0} for service {1}",
                             launched.getFirst().getTaskArn(), svc.getServiceName());
                 } catch (Exception e) {
